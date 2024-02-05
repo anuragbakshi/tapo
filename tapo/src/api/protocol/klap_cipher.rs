@@ -1,7 +1,9 @@
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use openssl::sha::{Sha1, Sha256};
-use openssl::symm::{decrypt, encrypt, Cipher};
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+
+use sha1::{Digest, Sha1};
+use sha2::Sha256;
 
 #[derive(Debug)]
 pub(super) struct KlapCipher {
@@ -32,12 +34,11 @@ impl KlapCipher {
     pub fn encrypt(&self, data: String) -> anyhow::Result<(Vec<u8>, i32)> {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
 
-        let cipher_bytes = encrypt(
-            Cipher::aes_128_cbc(),
-            &self.key,
-            Some(&self.iv_seq(seq)),
-            data.as_bytes(),
-        )?;
+        let cipher_bytes = cbc::Encryptor::<aes::Aes128>::new(
+            self.key.as_slice().into(),
+            self.iv_seq(seq).as_slice().into(),
+        )
+        .encrypt_padded_vec_mut::<Pkcs7>(&data.as_bytes());
 
         let signature = Self::sha256(
             &[
@@ -54,12 +55,13 @@ impl KlapCipher {
     }
 
     pub fn decrypt(&self, seq: i32, cipher_bytes: Vec<u8>) -> anyhow::Result<String> {
-        let decrypted_bytes = decrypt(
-            Cipher::aes_128_cbc(),
-            &self.key,
-            Some(&self.iv_seq(seq)),
-            &cipher_bytes[32..],
-        )?;
+        let decrypted_bytes = cbc::Decryptor::<aes::Aes128>::new(
+            self.key.as_slice().into(),
+            self.iv_seq(seq).as_slice().into(),
+        )
+        .decrypt_padded_vec_mut::<Pkcs7>(cipher_bytes.as_slice())
+        .unwrap();
+
         let decrypted = std::str::from_utf8(&decrypted_bytes)?.to_string();
 
         Ok(decrypted)
@@ -101,12 +103,12 @@ impl KlapCipher {
     pub fn sha256(value: &[u8]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(value);
-        hasher.finish()
+        hasher.finalize().into()
     }
 
     pub fn sha1(value: &[u8]) -> [u8; 20] {
         let mut hasher = Sha1::new();
         hasher.update(value);
-        hasher.finish()
+        hasher.finalize().into()
     }
 }
